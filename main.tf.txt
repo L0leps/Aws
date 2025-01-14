@@ -1,0 +1,146 @@
+provider "aws" {
+  region = "us-east-1"
+}
+
+# S3 Bucket
+resource "aws_s3_bucket" "my_web_bucket" {
+  bucket = "myweb1proj-unique-name"
+}
+
+# S3 Bucket Ownership Controls
+resource "aws_s3_bucket_ownership_controls" "ownership_controls" {
+  bucket = aws_s3_bucket.my_web_bucket.id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+# S3 Public Access Block
+resource "aws_s3_bucket_public_access_block" "public_access_block" {
+  bucket = aws_s3_bucket.my_web_bucket.id
+
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+}
+
+# S3 Bucket Policy
+resource "aws_s3_bucket_policy" "my_web_bucket_policy" {
+  bucket = aws_s3_bucket.my_web_bucket.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Principal = "*",
+        Action = "s3:GetObject",
+        Resource = "${aws_s3_bucket.my_web_bucket.arn}/*"
+      }
+    ]
+  })
+}
+
+# IAM Role for CodePipeline
+resource "aws_iam_role" "codepipeline_role" {
+  name = "codepipeline_role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect = "Allow",
+      Principal = {
+        Service = "codepipeline.amazonaws.com"
+      },
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+# IAM Policy for S3 Access (Custom)
+resource "aws_iam_policy" "codepipeline_s3_access" {
+  name        = "CodePipelineS3Access"
+  description = "Allow CodePipeline to access S3 bucket for artifacts"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = [
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:ListBucket"
+        ],
+        Resource = [
+          "arn:aws:s3:::myweb1proj-unique-name",                # Доступ к бакету
+          "arn:aws:s3:::myweb1proj-unique-name/*"              # Доступ к объектам внутри бакета
+        ]
+      }
+    ]
+  })
+}
+
+# Attach Custom Policy to Role
+resource "aws_iam_role_policy_attachment" "codepipeline_s3_policy" {
+  role       = aws_iam_role.codepipeline_role.name
+  policy_arn = aws_iam_policy.codepipeline_s3_access.arn
+}
+
+# Attach AWS Managed Policy for CodePipeline Full Access
+resource "aws_iam_role_policy_attachment" "codepipeline_policy" {
+  role       = aws_iam_role.codepipeline_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSCodePipeline_FullAccess"
+}
+
+# CodePipeline Resource
+resource "aws_codepipeline" "web_pipeline" {
+  name = "MyWebPipeline"
+  
+  role_arn = aws_iam_role.codepipeline_role.arn
+      
+  artifact_store {
+    type     = "S3"
+    location = aws_s3_bucket.my_web_bucket.bucket
+  }
+      
+  stage {
+    name = "Source"
+        
+    action {
+      name             = "GitHub_Source"
+      category         = "Source"
+      owner            = "ThirdParty"
+      provider         = "GitHub"
+      version          = "1"
+      output_artifacts = ["source_output"]
+      
+      configuration = {
+        Owner      = "L0leps"                          # Ваш GitHub username
+        Repo       = "web"                             # Имя репозитория
+        Branch     = "main"                            # Основная ветка
+        OAuthToken = "......................................" # GitHub OAuth Token
+      }
+    }  
+  }
+
+  stage {
+    name = "Deploy"
+  
+    action {
+      name             = "S3_Deploy"
+      category         = "Deploy"
+      owner            = "AWS"
+      provider         = "S3"
+      version          = "1"
+      input_artifacts  = ["source_output"]
+    
+      configuration = {
+        BucketName = aws_s3_bucket.my_web_bucket.bucket
+        Extract    = "true"
+      }
+    }
+  }
+}
